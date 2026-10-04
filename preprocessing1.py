@@ -8,6 +8,7 @@ import numpy as np
 import pandas as pd
 
 from pyprep.prep_pipeline import PrepPipeline
+from mne_icalabel import label_components
 
 
 # ============================================================

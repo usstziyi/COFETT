@@ -284,6 +284,14 @@ def process_edf_file(edf_file: Path, events_file: Path):
     print("=" * 80)
 
     # --------------------------------------------------------
+    # 8.0 Skip if output FIF already exists
+    # --------------------------------------------------------
+    output_path = FIF_DIR / f"{edf_file.stem}.fif"
+    if output_path.exists():
+        print(f"[Skip] Existing FIF found: {output_path}")
+        return None
+
+    # --------------------------------------------------------
     # 8.1 Read raw EDF
     # --------------------------------------------------------
     raw = mne.io.read_raw_edf(edf_file, preload=True, verbose=False)
@@ -465,8 +473,6 @@ def process_edf_file(edf_file: Path, events_file: Path):
     # --------------------------------------------------------
     # 8.13 Save continuous FIF
     # --------------------------------------------------------
-    output_name = f"{edf_file.stem}_{SUBJECT_ID}_{METHOD_STR}-raw.fif"
-    output_path = FIF_DIR / output_name
     raw_new_reconstructed.save(output_path, overwrite=True, verbose=False)
     print(f"[Saved] {output_path}")
 
@@ -511,8 +517,11 @@ for ses_dir in sorted(DATA_FOLDER.glob("ses-*")):
     print(f"Found {len(pairs)} EDF/events pairs.")
 
     for edf_file, events_file in pairs:
-        qc, eeg_order = process_edf_file(edf_file, events_file)
-        exit(0)
+        result = process_edf_file(edf_file, events_file)
+        if result is None:
+            print(f"[Skip] {edf_file.name} already processed.")
+            continue
+        qc, eeg_order = result
 
         # ----------------------------------------------------
         # Verify EEG channel order

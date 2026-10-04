@@ -1,0 +1,30 @@
+[project]
+name = "cofett"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+authors = [
+    { name = "usstziyi", email = "007lookworld@gmail.com" }
+]
+requires-python = ">=3.10,<3.11"
+dependencies = [
+    "mne==1.6.0",
+    "mne-icalabel==0.6.0",
+    "pyprep==0.4.3",
+    "autoreject==0.4.3",
+    # MNE 1.6.0 不兼容 NumPy 2.x，必须锁在 1.x
+    "numpy==1.26.4",
+    "scipy==1.15.3",
+    "pandas==2.3.3",
+    "matplotlib==3.10.9",
+    "openpyxl==3.1.5",
+    # mne-icalabel 的 ICLabel 推理依赖 torch；只跑预处理可改装 CPU 版
+    "torch==2.14.1",
+]
+
+[project.scripts]
+cofett = "cofett:main"
+
+[build-system]
+requires = ["uv_build>=0.12.19,<0.13.0"]
+build-backend = "uv_build"

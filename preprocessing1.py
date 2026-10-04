@@ -452,6 +452,16 @@ def process_edf_file(edf_file: Path, events_file: Path):
         raw_new_reconstructed = raw_new.copy()
         ica.apply(raw_new_reconstructed, exclude=exclude_idx)
 
+        # ica.fit 默认 exclude='bads'，PREP 判定的 still-bad 通道（如 POO9h）
+        # 没有参与 ICA 拟合。ICA 重建完成后，再用已去伪迹的邻近通道
+        # 对这些通道补做一次插值，得到干净的 122 通道数据。
+        # interpolate_bads 默认 reset_bads=True，插值后会清空 info['bads']，
+        # 避免下游按 bads 再次排除该通道。
+        post_ica_bads = list(raw_new_reconstructed.info["bads"])
+        if post_ica_bads:
+            print(f"[ICA] Interpolate still-bad channels after ICA: {post_ica_bads}")
+            raw_new_reconstructed.interpolate_bads()
+
     # --------------------------------------------------------
     # 8.13 Save continuous FIF
     # --------------------------------------------------------

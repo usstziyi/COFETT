@@ -148,7 +148,7 @@ def process_edf_file(edf_file, events_file, output_folder):
     montage = mne.channels.read_custom_montage("montage.csv")
     raw.set_montage(montage,on_missing="raise")
 
-    exit(0)
+  
 
     if PREP:
         # run pyprep
@@ -159,7 +159,7 @@ def process_edf_file(edf_file, events_file, output_folder):
             "line_freqs": np.arange(50, sample_rate / 2, 50), # 50,100,150,200Hz
         }
 
-        prep = PrepPipeline(raw, prep_params, custom_montage, ransac=RANSAC)
+        prep = PrepPipeline(raw, prep_params, montage, ransac=RANSAC)
         prep.fit()
 
         raw_new = prep.raw 
@@ -170,6 +170,8 @@ def process_edf_file(edf_file, events_file, output_folder):
 
     # 如果打印结果为空，说明所有坏道都被插值修复了
     print("Still bad channels: ", raw_new.info['bads'])
+
+    exit(0)
 
     # High-pass filter
     raw_new.filter(l_freq=1, h_freq=None)

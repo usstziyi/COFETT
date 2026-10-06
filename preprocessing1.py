@@ -9,6 +9,10 @@ import pandas as pd
 
 from pyprep.prep_pipeline import PrepPipeline
 from mne_icalabel import label_components
+from autoreject import get_rejection_threshold
+
+from joblib import parallel_config
+
 
 
 # ============================================================
@@ -20,6 +24,7 @@ METHOD_STR = "prep"
 SAMPLE_RATE = 500
 
 TEST = False
+N_JOBS = 1
 PREP = True
 ICA = True
 
@@ -247,58 +252,6 @@ def build_annotations(events_df):
     )
 
 
-def crop_to_task_interval(raw, events_df):
-    """保留 [第一个 Reading start, 最后一个 1.8 s rest start)。
-
-    在原始采样率下裁切所有通道，末尾 rest 事件及其采样点不保留。
-    events_df 的 onset/sample 仍使用原始记录坐标，仅筛选保留的事件。
-    MNE 通过 first_samp 管理裁切后的 annotations；不要再手动减 onset，
-    否则会重复偏移。相对裁切后起点的事件秒数为
-    raw.annotations.onset - raw.first_time。
-    """
-    if not np.isfinite(events_df["onset"].to_numpy(dtype=float)).all():
-        raise ValueError("Event onsets must all be finite.")
-
-    reading_onsets = events_df.loc[events_df["value"] == 65329, "onset"]
-    rest_onsets = events_df.loc[events_df["value"] == 65381, "onset"]
-    if reading_onsets.empty or rest_onsets.empty:
-        raise ValueError(
-            "Task crop requires Reading start (65329) and "
-            "1.8 s rest start (65381) events."
-        )
-
-    start = float(reading_onsets.min())
-    stop = float(rest_onsets.max())
-    sfreq = raw.info["sfreq"]
-    if not (0 <= start < stop <= raw.n_times / sfreq):
-        raise ValueError(
-            f"Invalid task crop interval [{start}, {stop}) for "
-            f"a {raw.n_times / sfreq:.6f} s recording."
-        )
-    start_sample, stop_sample = raw.time_as_index([start, stop], use_rounding=True)
-    if stop_sample <= start_sample:
-        raise ValueError("Task crop interval contains no samples.")
-
-    retained_events = events_df.loc[
-        (events_df["onset"] >= start) & (events_df["onset"] < stop)
-    ].copy()
-    # 显式去掉末尾事件：MNE 对零时长 annotation 的边界保留规则
-    # 不应决定我们是否保留最后一个 rest 事件。
-    raw.set_annotations(build_annotations(retained_events))
-    raw.crop(tmin=start, tmax=stop, include_tmax=False)
-
-    crop_info = {
-        "n_events_original": len(events_df),
-        "crop_start_onset_s": start,
-        "crop_stop_onset_s": stop,
-        "crop_start_sample_original": int(start_sample),
-        "crop_stop_sample_original_exclusive": int(stop_sample),
-    }
-    print(f"[Task crop] [{start:.6f}, {stop:.6f}) s in original recording")
-    print(f"[Task crop] events = {len(events_df)} -> {len(retained_events)}")
-    return raw, retained_events, crop_info
-
-
 # ============================================================
 # 7. Helpers
 # ============================================================
@@ -355,14 +308,14 @@ def process_edf_file(edf_file: Path, events_file: Path):
         print(f"[WARNING] Expected 127 raw channels, got {raw.info['nchan']}.")
 
     # --------------------------------------------------------
-    # 8.2 Load events -> crop task interval -> resample
+    # 8.2 Load events -> annotations, then resample
     # --------------------------------------------------------
     # annotations 的 onset 单位是秒，与采样率无关。
-    # 先按原始 onset 裁掉首尾非任务数据，再重采样。
-    # MNE 管理裁切后的 first_samp 和 annotations 时间关系，
-    # 不再手动平移 onset；原始 events.tsv 不修改。
+    # 先用原始 1000Hz 记录的 onset 建立 annotations，
+    # 再重采样：MNE 只改变数据点密度，onset bao保持不变，
+    # 因此事件时刻不会漂移，annotations 也会随 raw 一起保存。
     events_df = load_events_file(events_file)
-    raw, events_df, crop_info = crop_to_task_interval(raw, events_df)
+    raw.set_annotations(build_annotations(events_df))
 
     event_counts = events_df["value"].value_counts().sort_index().to_dict()
     print("[Events]", event_counts)
@@ -480,7 +433,6 @@ def process_edf_file(edf_file: Path, events_file: Path):
     qc = {
         "edf_file": edf_file.name,
         "events_file": events_file.name,
-        **crop_info,
         "n_channels_raw": 127,
         "n_eeg": len(get_eeg_channels(raw_new)),
         "sfreq": raw_new.info["sfreq"],
@@ -497,33 +449,115 @@ def process_edf_file(edf_file: Path, events_file: Path):
     }
 
     # --------------------------------------------------------
-    # 8.12 ICA
+    # 8.12 Autoreject on fixed-length epochs (EEG only)
     # --------------------------------------------------------
+    # 用 make_fixed_length_events 把连续数据切成等长 Epochs。
+    # 关键：不丢弃任何数据点，只用于让 autoreject / ICA 知道
+    # 哪些时间段是"坏段"，最终 ICA.apply 仍作用在完整 raw 上。
+    #
+    # 这里 epochs 只 pick EEG，原因：
+    #   - ICA 只对 EEG 拟合，EOG/stim 不应参与
+    #   - get_rejection_threshold 只算 EEG 阈值即可
+    #   - label_components 的 ICLabel 也只在 EEG 上评估
+    FIXED_EPOCH_DURATION = 2.0
+    FIXED_EPOCH_OVERLAP = 0.0
 
+    events = mne.make_fixed_length_events(
+        raw_new,
+        id=1,
+        start=0,
+        stop=None,
+        duration=FIXED_EPOCH_DURATION,
+        overlap=FIXED_EPOCH_OVERLAP,
+    )
+
+    epochs = mne.Epochs(
+        raw_new,
+        events=events,
+        event_id={"fixed": 1},
+        tmin=0.0,
+        tmax=FIXED_EPOCH_DURATION - 1.0 / raw_new.info["sfreq"],
+        baseline=None,
+        picks="eeg",          # 只保留 EEG 通道
+        preload=True,
+        reject=None,          # 先不 reject，交给 autoreject 定阈值
+        flat=None,
+        verbose=False,
+    )
+    print(f"[Autoreject] Fixed-length EEG epochs: {len(epochs)} "
+          f"(duration={FIXED_EPOCH_DURATION}s, overlap={FIXED_EPOCH_OVERLAP}s, "
+          f"channels={len(epochs.ch_names)})")
+
+    # get_rejection_threshold 返回 {ch_type: peak-to-peak 阈值}，
+    # 可直接传给 ica.fit 的 reject 参数。
+    reject_threshold = get_rejection_threshold(
+        epochs,
+        ch_types=["eeg"],
+        verbose=False,
+    )
+    print(f"[Autoreject] Rejection threshold: {reject_threshold}")
+
+    # --------------------------------------------------------
+    # 8.13 ICA (EEG only)
+    # --------------------------------------------------------
     if ICA:
-        ica = mne.preprocessing.ICA(n_components=30, random_state=97, max_iter="auto",method='infomax', fit_params=dict(extended=True)) # 使用extended-infomax算法
-        ica.fit(raw_new)
-        ic_labels = label_components(raw_new, ica, method="iclabel")
+        ica = mne.preprocessing.ICA(
+            n_components=30,
+            random_state=97,
+            max_iter="auto",
+            method="infomax",
+            fit_params=dict(extended=True),
+        )
+
+        # ICA.fit 的 reject 只在 inst 为 Raw 时才生效，传 Epochs 会被直接忽略
+        # （MNE 会抛 RuntimeWarning）。所以把 autoreject 的阈值设到 Epochs 上，
+        # 由 drop_bad 真正丢掉坏段；ica.fit 内部调用 epochs.get_data() 时
+        # 拿到的就只剩好段。以上只影响 ICA 的拟合数据，
+        # raw_new 的时间轴完全不受影响。
+        n_epochs_before_drop = len(epochs)
+        epochs.drop_bad(reject=reject_threshold, verbose=False)
+        print(f"[Autoreject] Epochs kept for ICA: {len(epochs)}/"
+              f"{n_epochs_before_drop}")
+
+        # epochs 已经只有 EEG，这里再显式 picks="eeg" 是双保险。
+        ica.fit(
+            epochs,
+            picks="eeg",
+            verbose=False,
+        )
+
+        # ICLabel 需要和 ica 通道一致的 raw。
+        # raw_new 里还有 EOG/stim，直接传可能触发通道不匹配，
+        # 所以这里 pick 出一个只含 EEG 的副本。
+        raw_for_iclabel = raw_new.copy().pick("eeg")
+        ic_labels = label_components(raw_for_iclabel, ica, method="iclabel")
         labels = ic_labels["labels"]
         exclude_idx = [
-            idx for idx, label in enumerate(labels) if label not in ["brain", "other"]
+            idx for idx, label in enumerate(labels)
+            if label not in ["brain", "other"]
         ]
         print(f"Reading Raw Excluding these ICA components: {exclude_idx}")
+
+        # 关键：ica.apply 作用在完整的 raw_new 上，
+        # 覆盖所有时间段（含坏段），EOG/stim 原样保留。
         raw_new_reconstructed = raw_new.copy()
         ica.apply(raw_new_reconstructed, exclude=exclude_idx)
-
-        # ica.fit 默认 exclude='bads'，PREP 判定的 still-bad 通道（如 POO9h）
-        # 没有参与 ICA 拟合。ICA 重建完成后，再用已去伪迹的邻近通道
-        # 对这些通道补做一次插值，得到干净的 122 通道数据。
-        # interpolate_bads 默认 reset_bads=True，插值后会清空 info['bads']，
-        # 避免下游按 bads 再次排除该通道。
-        post_ica_bads = list(raw_new_reconstructed.info["bads"])
-        if post_ica_bads:
-            print(f"[ICA] Interpolate still-bad channels after ICA: {post_ica_bads}")
-            raw_new_reconstructed.interpolate_bads()
+    else:
+        raw_new_reconstructed = raw_new.copy()
 
     # --------------------------------------------------------
-    # 8.13 Save continuous FIF
+    # 8.14 Interpolate still-bad channels
+    # --------------------------------------------------------
+    # ica.fit 默认 exclude='bads'，PREP 判定的 still-bad 通道
+    # 没有参与 ICA 拟合。ICA 重建完成后，再用已去伪迹的邻近通道
+    # 对这些通道补做一次插值。
+    post_ica_bads = list(raw_new_reconstructed.info["bads"])
+    if post_ica_bads:
+        print(f"[ICA] Interpolate still-bad channels after ICA: {post_ica_bads}")
+        raw_new_reconstructed.interpolate_bads()
+
+    # --------------------------------------------------------
+    # 8.15 Save continuous FIF
     # --------------------------------------------------------
     raw_new_reconstructed.save(output_path, overwrite=True, verbose=False)
     print(f"[Saved] {output_path}")
@@ -569,7 +603,8 @@ for ses_dir in sorted(DATA_FOLDER.glob("ses-*")):
     print(f"Found {len(pairs)} EDF/events pairs.")
 
     for edf_file, events_file in pairs:
-        result = process_edf_file(edf_file, events_file)
+        with parallel_config(backend="threading", n_jobs=N_JOBS):
+            result = process_edf_file(edf_file, events_file)
         if result is None:
             print(f"[Skip] {edf_file.name} already processed.")
             continue

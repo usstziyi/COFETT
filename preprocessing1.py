@@ -247,6 +247,58 @@ def build_annotations(events_df):
     )
 
 
+def crop_to_task_interval(raw, events_df):
+    """保留 [第一个 Reading start, 最后一个 1.8 s rest start)。
+
+    在原始采样率下裁切所有通道，末尾 rest 事件及其采样点不保留。
+    events_df 的 onset/sample 仍使用原始记录坐标，仅筛选保留的事件。
+    MNE 通过 first_samp 管理裁切后的 annotations；不要再手动减 onset，
+    否则会重复偏移。相对裁切后起点的事件秒数为
+    raw.annotations.onset - raw.first_time。
+    """
+    if not np.isfinite(events_df["onset"].to_numpy(dtype=float)).all():
+        raise ValueError("Event onsets must all be finite.")
+
+    reading_onsets = events_df.loc[events_df["value"] == 65329, "onset"]
+    rest_onsets = events_df.loc[events_df["value"] == 65381, "onset"]
+    if reading_onsets.empty or rest_onsets.empty:
+        raise ValueError(
+            "Task crop requires Reading start (65329) and "
+            "1.8 s rest start (65381) events."
+        )
+
+    start = float(reading_onsets.min())
+    stop = float(rest_onsets.max())
+    sfreq = raw.info["sfreq"]
+    if not (0 <= start < stop <= raw.n_times / sfreq):
+        raise ValueError(
+            f"Invalid task crop interval [{start}, {stop}) for "
+            f"a {raw.n_times / sfreq:.6f} s recording."
+        )
+    start_sample, stop_sample = raw.time_as_index([start, stop], use_rounding=True)
+    if stop_sample <= start_sample:
+        raise ValueError("Task crop interval contains no samples.")
+
+    retained_events = events_df.loc[
+        (events_df["onset"] >= start) & (events_df["onset"] < stop)
+    ].copy()
+    # 显式去掉末尾事件：MNE 对零时长 annotation 的边界保留规则
+    # 不应决定我们是否保留最后一个 rest 事件。
+    raw.set_annotations(build_annotations(retained_events))
+    raw.crop(tmin=start, tmax=stop, include_tmax=False)
+
+    crop_info = {
+        "n_events_original": len(events_df),
+        "crop_start_onset_s": start,
+        "crop_stop_onset_s": stop,
+        "crop_start_sample_original": int(start_sample),
+        "crop_stop_sample_original_exclusive": int(stop_sample),
+    }
+    print(f"[Task crop] [{start:.6f}, {stop:.6f}) s in original recording")
+    print(f"[Task crop] events = {len(events_df)} -> {len(retained_events)}")
+    return raw, retained_events, crop_info
+
+
 # ============================================================
 # 7. Helpers
 # ============================================================
@@ -303,14 +355,14 @@ def process_edf_file(edf_file: Path, events_file: Path):
         print(f"[WARNING] Expected 127 raw channels, got {raw.info['nchan']}.")
 
     # --------------------------------------------------------
-    # 8.2 Load events -> annotations, then resample
+    # 8.2 Load events -> crop task interval -> resample
     # --------------------------------------------------------
     # annotations 的 onset 单位是秒，与采样率无关。
-    # 先用原始 1000 Hz 记录的 onset 建立 annotations，
-    # 再重采样：MNE 只改变数据点密度，onset 保持不变，
-    # 因此事件时刻不会漂移，annotations 也会随 raw 一起保存。
+    # 先按原始 onset 裁掉首尾非任务数据，再重采样。
+    # MNE 管理裁切后的 first_samp 和 annotations 时间关系，
+    # 不再手动平移 onset；原始 events.tsv 不修改。
     events_df = load_events_file(events_file)
-    raw.set_annotations(build_annotations(events_df))
+    raw, events_df, crop_info = crop_to_task_interval(raw, events_df)
 
     event_counts = events_df["value"].value_counts().sort_index().to_dict()
     print("[Events]", event_counts)
@@ -380,7 +432,6 @@ def process_edf_file(edf_file: Path, events_file: Path):
     # --------------------------------------------------------
     raw.set_montage(MONTAGE, on_missing="raise")
 
-
     # --------------------------------------------------------
     # 8.9 PREP
     # --------------------------------------------------------
@@ -429,6 +480,7 @@ def process_edf_file(edf_file: Path, events_file: Path):
     qc = {
         "edf_file": edf_file.name,
         "events_file": events_file.name,
+        **crop_info,
         "n_channels_raw": 127,
         "n_eeg": len(get_eeg_channels(raw_new)),
         "sfreq": raw_new.info["sfreq"],

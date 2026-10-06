@@ -33,6 +33,9 @@ DEFAULT_FIF = (
     / "sub-01_ses-01_task-para1_run-01_eeg.fif"
 )
 
+# 图片默认保存目录（与 fif 同级），可用 --output 覆盖
+PLOT_FOLDER = DEFAULT_FIF.parent.parent / "plot"
+
 # 未指定事件 / 时间区间时，默认绘制多长的一段
 DEFAULT_WINDOW = 10.0
 
@@ -127,7 +130,7 @@ def plot_eeg_window(
         显式指定要绘制的通道名；给定时忽略 n_channels。
     output : str | Path | None
         图片保存路径（仅在 show=False 时生效）；
-        默认保存到 FIF 同级目录下 <文件名>_plot.png。
+        默认保存到 plot 目录下 <文件名>_plot.png。
     show : bool
         为 True 时只弹出交互窗口、不保存图片；
         为 False 时才保存图片到 output，不弹窗。
@@ -208,7 +211,7 @@ def plot_eeg_window(
 
     # show=False：保存图片，不弹窗
     if output is None:
-        output = fif_file.with_name(f"{fif_file.stem}_plot.png")
+        output = PLOT_FOLDER / f"{fif_file.stem}_plot.png"
     output = Path(output)
     output.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(output, dpi=150)

@@ -23,7 +23,7 @@ SUBJECT_ID = "sub-01"
 METHOD_STR = "prep"
 SAMPLE_RATE = 500
 
-TEST = False
+CROP = True
 N_JOBS = 1
 PREP = True
 ICA = True
@@ -326,10 +326,35 @@ def process_edf_file(edf_file: Path, events_file: Path):
 
 
     # --------------------------------------------------------
-    # 8.3 Optional test crop
+    # 8.3 Optional crop last
     # --------------------------------------------------------
-    if TEST:
-        raw.crop(tmin=300, tmax=600)
+    if CROP:
+        rest_start_label = "1.8 s rest start"
+        rest_onsets = raw.annotations.onset[
+            raw.annotations.description == rest_start_label
+        ]
+        if len(rest_onsets) == 0:
+            raise RuntimeError(
+                f"No '{rest_start_label}' annotation found in {edf_file.name}."
+            )
+
+        last_rest_onset = float(rest_onsets[-1])
+        crop_end = last_rest_onset + 0.1
+
+        if crop_end < raw.times[-1]:
+            print(
+                f"[Crop] Last '{rest_start_label}' at {last_rest_onset:.3f} s, "
+                f"cropping raw to [0, {crop_end:.3f}] s."
+            )
+            raw.crop(tmin=0.0, tmax=crop_end, include_tmax=True, verbose=False)
+            print(f"[Crop] New duration = {raw.times[-1]:.3f} s, "
+                f"annotations = {len(raw.annotations)}")
+        else:
+            print(
+                f"[Crop] Last '{rest_start_label}' at {last_rest_onset:.3f} s, "
+                f"crop_end={crop_end:.3f} s >= raw end {raw.times[-1]:.3f} s, "
+                "skip cropping."
+            )
 
     # --------------------------------------------------------
     # 8.4 Remove invalid EEG channels

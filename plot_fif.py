@@ -11,6 +11,7 @@
 
 用法示例：
     uv run python plot_fif.py
+    uv run python plot_fif.py --file sub-01_ses-01_task-para1_run-01_eeg.fif
     uv run python plot_fif.py --channels 8 --start-event "Reading start" --end-event "Inner-speech start"
     uv run python plot_fif.py --channels 10 --tmin 300 --tmax 310
     uv run python plot_fif.py --show
@@ -32,9 +33,22 @@ DEFAULT_FIF = (
     / "fif"
     / "sub-01_ses-01_task-para1_run-01_eeg.fif"
 )
+FIF_FOLDER = (
+    ROOT_FOLDER 
+    / "preprocess_output" 
+    / "prep" 
+    / "sub-01"
+    / "fif"
+)
 
 # 图片默认保存目录（与 fif 同级），可用 --output 覆盖
-PLOT_FOLDER = DEFAULT_FIF.parent.parent / "plot"
+PLOT_FOLDER = (
+    ROOT_FOLDER 
+    / "preprocess_output" 
+    / "prep" 
+    / "sub-01"
+    / "plot"
+)
 
 # 未指定事件 / 时间区间时，默认绘制多长的一段
 DEFAULT_WINDOW = 10.0
@@ -135,7 +149,7 @@ def plot_eeg_window(
         为 True 时只弹出交互窗口、不保存图片；
         为 False 时才保存图片到 output，不弹窗。
     """
-    fif_file = Path(fif_file)
+    fif_file = Path(FIF_FOLDER) / fif_file
     raw = mne.io.read_raw_fif(fif_file, preload=False, verbose=False)
 
     eeg_names = [

@@ -14,7 +14,7 @@
 （格式：npz，内含 X / y 及事件元信息）。
 
 用法：
-    uv run python build_inner_dataset.py --subject sub-02
+    uv run python build_buckets.py --subject sub-02
 """
 
 import argparse

@@ -5,7 +5,7 @@
     preprocess_output/<METHOD_STR>/<subject>/fif/*.fif
 
 用法：
-    uv run python build_dataset.py --subject sub-02
+    uv run python check_phase_durations.py --subject sub-02
 """
 
 import argparse

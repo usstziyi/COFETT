@@ -28,7 +28,7 @@ import numpy as np
 import pandas as pd
 
 # ============================================================
-# 路径配置（原 build_dataset.py，本地化一份便于改动）
+# 路径配置
 # ============================================================
 ROOT_FOLDER = Path(__file__).resolve().parent
 METHOD_STR = "prep"
@@ -45,9 +45,6 @@ SEC_PER_CHAR = 0.4
 SFREQ = 500
 
 
-# ============================================================
-# 以下为原 build_dataset.py 中复制过来的辅助函数
-# ============================================================
 def get_fif_files(subject):
     """返回某被试 fif 目录下的全部 fif 文件（按名称排序）。"""
     fif_dir = PREP_ROOT / subject / "fif"

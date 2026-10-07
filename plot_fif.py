@@ -12,6 +12,7 @@
 用法示例：
     uv run python plot_fif.py
     uv run python plot_fif.py --file sub-01_ses-01_task-para1_run-01_eeg.fif
+    uv run python plot_fif.py --file sub-01_ses-01_task-para1_run-01_eeg.fif --channels 10 --tmin 0 --tmax 100
     uv run python plot_fif.py --channels 8 --start-event "Reading start" --end-event "Inner-speech start"
     uv run python plot_fif.py --channels 10 --tmin 300 --tmax 310
     uv run python plot_fif.py --show

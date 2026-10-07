@@ -8,7 +8,10 @@
        取 EEG 通道数据，形状 (n_channels, n_points)
     y：事件对应的 text
 
-本脚本只构造数据，不做任何存盘。
+按 (day, n_points) 分桶后，每个桶存成
+    preprocess_output/prep/<subject>/buckets/day-XX_bucket-size-NN.npz
+并在同目录下写一份 buckets.csv 汇总每个桶的信息。
+（格式：npz，内含 X / y 及事件元信息）。
 
 用法：
     uv run python build_inner_dataset.py --subject sub-02
@@ -220,14 +223,17 @@ def extract_inner_events(fif_file, text_file, day):
     return X, y, rows
 
 
-def build_buckets(rows):
+def build_buckets(X, y, rows):
     """按 (day, n_points) 分桶：同一天内 n_points 相同的样本进同一个桶。
 
     rows 为全量事件元信息（顺序与 X / y 一致），
     返回按 (day, n_points) 排序的桶列表，每个桶为一个描述 dict：
         day / n_points / n_chars / duration_s / n_samples / n_padded
-        idx / onsets_s / sentences
-    其中 idx 为桶内样本在全局 X、y 中的下标。
+        idx / onsets_s / X / y
+    其中：
+        idx : 桶内样本在全局 X、y 中的下标
+        X   : 桶内样本堆叠结果，形状 (n_samples, n_channels, n_points)
+        y   : 桶内样本对应的句子
     """
     buckets = {}
     for idx, row in enumerate(rows):
@@ -241,20 +247,73 @@ def build_buckets(rows):
                 "duration_s": round(row["n_points"] / SFREQ, 3),
                 "idx": [],
                 "onsets_s": [],
-                "sentences": [],
                 "n_padded": 0,
             }
             buckets[key] = bucket
 
         bucket["idx"].append(idx)
         bucket["onsets_s"].append(row["onset_s"])
-        bucket["sentences"].append(row["sentence"])
         bucket["n_padded"] += row["padded"] > 0
 
     result = sorted(buckets.values(), key=lambda b: (b["day"], b["n_points"]))
     for bucket in result:
         bucket["n_samples"] = len(bucket["idx"])
+        bucket["X"] = np.stack([X[i] for i in bucket["idx"]])
+        bucket["y"] = [y[i] for i in bucket["idx"]]
     return result
+
+
+def get_bucket_path(subject, bucket):
+    """返回某个桶的保存路径：<subject>/buckets/day-XX_bucket-size-NN.npz。"""
+    return (
+        PREP_ROOT / subject / "buckets"
+        / f"day-{bucket['day']:02d}_bucket-size-{bucket['n_chars']:02d}.npz"
+    )
+
+
+def save_buckets(buckets, subject):
+    """把每个桶存成一个 npz（含 X / y 及事件元信息），返回保存目录与路径列表。"""
+    out_dir = PREP_ROOT / subject / "buckets"
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    paths = []
+    for bucket in buckets:
+        path = get_bucket_path(subject, bucket)
+        np.savez(
+            path,
+            X=bucket["X"],
+            y=np.array(bucket["y"]),
+            day=bucket["day"],
+            n_chars=bucket["n_chars"],
+            n_points=bucket["n_points"],
+            duration_s=bucket["duration_s"],
+            onsets_s=np.array(bucket["onsets_s"]),
+        )
+        paths.append(path)
+    return out_dir, paths
+
+
+def save_bucket_index(buckets, subject):
+    """在 <subject>/buckets/buckets.csv 列出每个桶的信息（不含 EEG 数据）。"""
+    out_dir = PREP_ROOT / subject / "buckets"
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    rows = [
+        {
+            "file": get_bucket_path(subject, bucket).name,
+            "day": bucket["day"],
+            "n_chars": bucket["n_chars"],
+            "n_points": bucket["n_points"],
+            "duration_s": bucket["duration_s"],
+            "n_samples": bucket["n_samples"],
+            "n_padded": bucket["n_padded"],
+        }
+        for bucket in buckets
+    ]
+
+    path = out_dir / "buckets.csv"
+    pd.DataFrame(rows).to_csv(path, index=False, encoding="utf-8-sig")
+    return path
 
 
 def main():
@@ -306,7 +365,7 @@ def main():
         print(f"  points/channels 示例 = {all_X[0].shape[1]}")
     print(f"[Padded] {n_padded_total} events 因超出记录末尾补零")
 
-    buckets = build_buckets(all_rows)
+    buckets = build_buckets(all_X, all_y, all_rows)
     print()
     print(f"[Buckets] 共 {len(buckets)} 个桶（key = day + n_points）")
     current_day = None
@@ -325,6 +384,12 @@ def main():
             f"n={bucket['n_samples']:>3}"
         )
 
+    out_dir, paths = save_buckets(buckets, args.subject)
+    index_path = save_bucket_index(buckets, args.subject)
+    print()
+    print(f"[Saved] {len(paths)} 个桶 -> {out_dir}")
+    print(f"[Saved] 桶信息索引 -> {index_path.name}")
+
     if all_rows:
         print()
         print("[Preview] 前 5 个事件")
@@ -333,9 +398,6 @@ def main():
                 f"  day={r['day']} #{r['index']}: n_chars={r['n_chars']} "
                 f"onset={r['onset_s']}s points={r['n_points']} | {r['sentence']}"
             )
-
-    print()
-    print("[Note] 未存盘。")
 
 
 if __name__ == "__main__":

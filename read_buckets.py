@@ -1,11 +1,11 @@
 """
-读取指定 subject、指定 day 的全部桶数据。
+读取指定 subject、指定若干 day 的全部桶数据，并按 n_chars 合并成组。
 
 读取范围：
     preprocess_output/prep/<subject>/buckets/day-XX_bucket-size-NN.npz
 
 用法：
-    uv run python read_buckets.py --subject sub-02 --day 1
+    uv run python read_buckets.py --subject sub-02 --days 1 2 3 4
 """
 
 import argparse
@@ -72,28 +72,76 @@ def load_day_buckets(subject, day):
     return [load_bucket(path) for path in list_bucket_files(subject, day)]
 
 
+def load_days_buckets(subject, days):
+    """加载某 subject 多天的桶，并把 n_chars 相同的样本合并成一组。
+
+    同一 n_chars 在各天的桶具有相同的 n_points，所以可直接沿样本维拼接。
+    返回按 n_chars 升序的 list[dict]，每项：
+        n_chars / n_points / duration_s
+        days              : 组内涉及的 day（升序）
+        n_samples         : 组内样本总数
+        n_samples_per_day : {day: 该天样本数}
+        X                 : (n_samples, n_channels, n_points)
+        y                 : list[str]，与 X 行序一致
+        sample_days       : list[int]，与 X 行序一致的 day 标签
+    """
+    groups = {}
+    for day in days:
+        for X, y, meta in load_day_buckets(subject, day):
+            group = groups.setdefault(
+                meta["n_chars"],
+                {
+                    "n_chars": meta["n_chars"],
+                    "n_points": meta["n_points"],
+                    "duration_s": meta["duration_s"],
+                    "n_samples_per_day": {},
+                    "X": [],
+                    "y": [],
+                    "sample_days": [],
+                },
+            )
+            group["X"].append(X)
+            group["y"].extend(y)
+            group["sample_days"].extend([meta["day"]] * meta["n_samples"])
+            group["n_samples_per_day"][meta["day"]] = meta["n_samples"]
+
+    result = []
+    for n_chars in sorted(groups):
+        group = groups[n_chars]
+        group["X"] = np.concatenate(group["X"], axis=0)
+        group["days"] = sorted(group["n_samples_per_day"])
+        group["n_samples"] = len(group["y"])
+        result.append(group)
+    return result
+
+
 def main():
     parser = argparse.ArgumentParser(
-        description="读取指定 subject、day 的全部桶数据。"
+        description="读取指定 subject、多个 day 的桶数据（按 n_chars 合并）。"
     )
     parser.add_argument("--subject", default="sub-01", help="被试 ID（默认 sub-01）")
-    parser.add_argument("--day", type=int, default=1, help="天数 Day（默认 1）")
+    parser.add_argument(
+        "--days", type=int, nargs="+", default=[1],
+        help="天数 Day，可给多个（默认 1）",
+    )
     args = parser.parse_args()
 
-    buckets = load_day_buckets(args.subject, args.day)
+    groups = load_days_buckets(args.subject, args.days)
 
     print(f"[Subject] {args.subject}")
-    print(f"[Day] {args.day}")
-    print(f"[Buckets] {len(buckets)} 个")
+    print(f"[Days] {args.days}")
+    print(f"[Groups] {len(groups)} 组（按 n_chars 合并）")
 
     n_total = 0
-    for X, y, meta in buckets:
-        n_total += meta["n_samples"]
+    for group in groups:
+        n_total += group["n_samples"]
         print(
-            f"  {meta['file']}: n_samples={meta['n_samples']} "
-            f"X={X.shape} {X.dtype} "
-            f"n_chars={meta['n_chars']} n_points={meta['n_points']} "
-            f"| {y[0]}"
+            f"  n_chars={group['n_chars']:>2} "
+            f"n_points={group['n_points']:>5} "
+            f"n_samples={group['n_samples']:>4} "
+            f"X={group['X'].shape} {group['X'].dtype} "
+            f"days={group['days']} per_day={group['n_samples_per_day']} "
+            f"| {group['y'][0]}"
         )
     print(f"[Total] {n_total} samples")
 

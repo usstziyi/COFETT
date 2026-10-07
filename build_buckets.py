@@ -359,7 +359,7 @@ def main():
     print(f"[Dataset] X = {len(all_X)} events, y = {len(all_y)} sentences")
     if all_X:
         print(f"  channels = {all_X[0].shape[0]}")
-        print(f"  points/channels 示例 = {all_X[0].shape[1]}")
+        print(f"  points = {all_X[0].shape[1]}")
     print(f"[Padded] {n_padded_total} events 因超出记录末尾补零")
 
     buckets = build_buckets(all_X, all_y, all_rows)

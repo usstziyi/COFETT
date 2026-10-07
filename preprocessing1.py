@@ -1,3 +1,4 @@
+import argparse
 import os
 import re
 from pathlib import Path
@@ -16,15 +17,30 @@ from joblib import parallel_config
 
 
 # ============================================================
+# 0. Command line arguments
+# ============================================================
+def parse_args():
+    parser = argparse.ArgumentParser(
+        description="Chisco-2.0 EEG 预处理（PyPREP + ICA）。"
+    )
+    parser.add_argument("--subject", default="sub-01", help="被试 ID（默认 sub-01）")
+    parser.add_argument("--n-jobs", type=int, default=1, help="并行任务数（默认 1）")
+    return parser.parse_args()
+
+
+ARGS = parse_args()
+
+
+# ============================================================
 # 1. Configuration
 # ============================================================
 ROOT_FOLDER = Path(__file__).resolve().parent
-SUBJECT_ID = "sub-01"
+SUBJECT_ID = ARGS.subject
 METHOD_STR = "prep"
 SAMPLE_RATE = 500
 
 CROP = True
-N_JOBS = 1
+N_JOBS = ARGS.n_jobs
 PREP = True
 ICA = True
 
@@ -312,7 +328,7 @@ def process_edf_file(edf_file: Path, events_file: Path):
     # --------------------------------------------------------
     # annotations 的 onset 单位是秒，与采样率无关。
     # 先用原始 1000Hz 记录的 onset 建立 annotations，
-    # 再重采样：MNE 只改变数据点密度，onset bao保持不变，
+    # 再重采样：MNE 只改变数据点密度，onset 保持不变，
     # 因此事件时刻不会漂移，annotations 也会随 raw 一起保存。
     events_df = load_events_file(events_file)
     raw.set_annotations(build_annotations(events_df))

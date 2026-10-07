@@ -12,18 +12,15 @@ duration 全为 0，因此单个事件本身没有时长可读。
     1.8 s rest start   -> 下一个 Reading start  = 1.8 s 休息时长
 最后一个事件没有“下一个事件”，其持续时长记为空。
 
-用法：
-    uv run python event_durations.py <fif文件名>
-    uv run python event_durations.py sub-01_ses-01_task-para1_run-01_eeg.fif
+用法（命令行只暴露 --fif 一个参数，被试目录由文件名解析得到）：
+    uv run python event_durations.py --fif sub-02_ses-01_task-para1_run-01_eeg.fif
+    uv run python event_durations.py --fif D:/abs/path/xxx.fif     # 也可直接给绝对路径
 
-<fif文件名> 会拼接在 FIF_FOLDER（默认 preprocess_output/prep/sub-01/fif）之下；
-也可以直接传绝对路径，此时 FIF_FOLDER 会被忽略。
-
-结果写入 analyse/<fif文件名>/ 目录（analyse 与 fif 同级），
+结果写入 <subject>/analyse/<fif文件名>/ 目录（analyse 与 fif 同级），
 每个事件类别一个独立 CSV（类内按时间顺序），例如：
-    analyse/sub-01_ses-01_task-para1_run-01_eeg/Reading_start.csv
-    analyse/sub-01_ses-01_task-para1_run-01_eeg/Inner-speech_start.csv
-    analyse/sub-01_ses-01_task-para1_run-01_eeg/1.8_s_rest_start.csv
+    analyse/sub-02_ses-01_task-para1_run-01_eeg/Reading_start.csv
+    analyse/sub-02_ses-01_task-para1_run-01_eeg/Inner-speech_start.csv
+    analyse/sub-02_ses-01_task-para1_run-01_eeg/1.8_s_rest_start.csv
 """
 
 import argparse
@@ -34,15 +31,26 @@ from pathlib import Path
 import mne
 
 ROOT_FOLDER = Path(__file__).resolve().parent
-FIF_FOLDER = (
-    ROOT_FOLDER
-    / "preprocess_output"
-    / "prep"
-    / "sub-01"
-    / "fif"
-)
-# 分析结果目录，与 fif 同级；每个 fif 再各自建一个子目录
-ANALYSE_FOLDER = FIF_FOLDER.parent / "analyse"
+METHOD_STR = "prep"
+PREP_ROOT = ROOT_FOLDER / "preprocess_output" / METHOD_STR
+
+
+def parse_subject(fif_name):
+    """从 BIDS 文件名解析被试目录名：sub-02_ses-01_..._eeg.fif -> sub-02。"""
+    return Path(fif_name).name.split("_")[0]
+
+
+def resolve_fif_file(fif_name):
+    """把文件名解析成实际路径；被试目录由文件名解析得到。绝对路径直接使用。"""
+    path = Path(fif_name)
+    if path.is_absolute():
+        return path
+    return PREP_ROOT / parse_subject(fif_name) / "fif" / path.name
+
+
+def analyse_folder(fif_file):
+    """分析结果目录，与被试的 fif 同级：<subject>/analyse。"""
+    return fif_file.parent.parent / "analyse"
 
 
 def event_durations(fif_file):
@@ -123,13 +131,18 @@ def main():
     parser = argparse.ArgumentParser(
         description="统计单个 FIF 文件中所有事件的持续时长（ms）。"
     )
-    parser.add_argument("fif", help="fif 目录下的 FIF 文件名（或绝对路径）")
+    parser.add_argument(
+        "--fif",
+        required=True,
+        help="fif 文件名，如 sub-02_ses-01_task-para1_run-01_eeg.fif；"
+        "被试目录由文件名解析得到",
+    )
     args = parser.parse_args()
 
-    fif_file = Path(FIF_FOLDER) / args.fif
+    fif_file = resolve_fif_file(args.fif)
     rows = event_durations(fif_file)
 
-    output_dir = ANALYSE_FOLDER / fif_file.stem
+    output_dir = analyse_folder(fif_file) / fif_file.stem
     written = save_category_csvs(rows, output_dir)
 
     print(f"[Events] {len(rows)}")

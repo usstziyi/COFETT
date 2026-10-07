@@ -9,13 +9,15 @@
     * start_event / end_event / occurrence   由事件描述确定绘制区间
     * tmin / tmax                      直接指定时间区间（秒）
 
-用法示例：
-    uv run python plot_fif.py
-    uv run python plot_fif.py --file sub-01_ses-01_task-para1_run-01_eeg.fif
-    uv run python plot_fif.py --file sub-01_ses-01_task-para1_run-01_eeg.fif --channels 10 --tmin 0 --tmax 100
-    uv run python plot_fif.py --channels 8 --start-event "Reading start" --end-event "Inner-speech start"
-    uv run python plot_fif.py --channels 10 --tmin 300 --tmax 310
-    uv run python plot_fif.py --show
+用法（命令行只暴露 --fif / --tmin / --tmax，被试目录由文件名解析得到）：
+    uv run python plot_fif.py --fif sub-02_ses-01_task-para1_run-01_eeg.fif
+    uv run python plot_fif.py --fif D:/abs/path/xxx.fif     # 也可直接给绝对路径
+    uv run python plot_fif.py --fif sub-02_ses-01_task-para1_run-01_eeg.fif --tmin 300 --tmax 310
+
+绘图区间 / 通道数等由代码内部默认值决定：
+    * n_channels = 10
+    * 未指定 tmin / tmax / 事件时，从第一条 annotation 起绘制 DEFAULT_WINDOW 秒
+    * 图片默认保存到 <subject>/plot/<文件名>_plot.png
 """
 
 import argparse
@@ -26,33 +28,29 @@ import mne
 import numpy as np
 
 ROOT_FOLDER = Path(__file__).resolve().parent
-DEFAULT_FIF = (
-    ROOT_FOLDER
-    / "preprocess_output"
-    / "prep"
-    / "sub-01"
-    / "fif"
-    / "sub-01_ses-01_task-para1_run-01_eeg.fif"
-)
-FIF_FOLDER = (
-    ROOT_FOLDER 
-    / "preprocess_output" 
-    / "prep" 
-    / "sub-01"
-    / "fif"
-)
-
-# 图片默认保存目录（与 fif 同级），可用 --output 覆盖
-PLOT_FOLDER = (
-    ROOT_FOLDER 
-    / "preprocess_output" 
-    / "prep" 
-    / "sub-01"
-    / "plot"
-)
+METHOD_STR = "prep"
+PREP_ROOT = ROOT_FOLDER / "preprocess_output" / METHOD_STR
 
 # 未指定事件 / 时间区间时，默认绘制多长的一段
 DEFAULT_WINDOW = 10.0
+
+
+def parse_subject(fif_name):
+    """从 BIDS 文件名解析被试目录名：sub-02_ses-01_..._eeg.fif -> sub-02。"""
+    return Path(fif_name).name.split("_")[0]
+
+
+def resolve_fif_file(fif_name):
+    """把文件名解析成实际路径；被试目录由文件名解析得到。绝对路径直接使用。"""
+    path = Path(fif_name)
+    if path.is_absolute():
+        return path
+    return PREP_ROOT / parse_subject(fif_name) / "fif" / path.name
+
+
+def plot_folder(fif_file):
+    """图片默认保存目录，与被试的 fif 同级：<subject>/plot。"""
+    return fif_file.parent.parent / "plot"
 
 
 def resolve_window(
@@ -150,7 +148,7 @@ def plot_eeg_window(
         为 True 时只弹出交互窗口、不保存图片；
         为 False 时才保存图片到 output，不弹窗。
     """
-    fif_file = Path(FIF_FOLDER) / fif_file
+    fif_file = resolve_fif_file(fif_file)
     raw = mne.io.read_raw_fif(fif_file, preload=False, verbose=False)
 
     eeg_names = [
@@ -226,7 +224,7 @@ def plot_eeg_window(
 
     # show=False：保存图片，不弹窗
     if output is None:
-        output = PLOT_FOLDER / f"{fif_file.stem}_plot.png"
+        output = plot_folder(fif_file) / f"{fif_file.stem}_plot.png"
     output = Path(output)
     output.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(output, dpi=150)
@@ -238,30 +236,19 @@ def plot_eeg_window(
 
 def main():
     parser = argparse.ArgumentParser(
-        description="绘制预处理 FIF 中一段 EEG 波形（不会一次性绘制全部数据）。"
+        description="绘制预处理 FIF 中一段 EEG 波形（不会一次性绘制整个数据）。"
     )
-    parser.add_argument("--file", default=str(DEFAULT_FIF), help="FIF 文件路径")
-    parser.add_argument("--channels", type=int, default=10, help="绘制的 EEG 通道数量")
+    parser.add_argument(
+        "--fif",
+        required=True,
+        help="fif 文件名，如 sub-02_ses-01_task-para1_run-01_eeg.fif；"
+        "被试目录由文件名解析得到",
+    )
     parser.add_argument("--tmin", type=float, default=None, help="起始时间（秒）")
     parser.add_argument("--tmax", type=float, default=None, help="结束时间（秒）")
-    parser.add_argument("--start-event", default=None, help="起始事件描述")
-    parser.add_argument("--end-event", default=None, help="结束事件描述")
-    parser.add_argument("--occurrence", type=int, default=0, help="start-event 第几次出现（从 0 开始）")
-    parser.add_argument("--output", default=None, help="图片保存路径（show=False 时生效）")
-    parser.add_argument("--show", action="store_true", help="只弹窗查看，不保存图片")
     args = parser.parse_args()
 
-    plot_eeg_window(
-        fif_file=args.file,
-        n_channels=args.channels,
-        tmin=args.tmin,
-        tmax=args.tmax,
-        start_event=args.start_event,
-        end_event=args.end_event,
-        occurrence=args.occurrence,
-        output=args.output,
-        show=args.show,
-    )
+    plot_eeg_window(fif_file=args.fif, tmin=args.tmin, tmax=args.tmax)
 
 
 if __name__ == "__main__":
